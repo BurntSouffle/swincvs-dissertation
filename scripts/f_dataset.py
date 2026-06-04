@@ -19,7 +19,15 @@ def get_datasets(config):
     dataset_dir = check_dataset(config)
     print(f"\nDataset loaded from: {dataset_dir}")
 
-    train_dataframe, val_dataframe, test_dataframe = get_three_dataframes(dataset_dir, lstm=config.MODEL.LSTM)
+    # F1a soft-label intervention: if TRAIN.SOFT_TRAIN_LABELS is True in the
+    # config, the train split uses the raw mean annotator-agreement values
+    # (in {0, 0.333, 0.667, 1.0}) as targets, instead of the MV-rounded {0, 1}.
+    # Val and test always stay MV so best-val-mAP selection and test scoring
+    # are identical to the baseline. Backward-compatible via hasattr.
+    soft_train = (hasattr(config.TRAIN, 'SOFT_TRAIN_LABELS')
+                  and config.TRAIN.SOFT_TRAIN_LABELS)
+    train_dataframe, val_dataframe, test_dataframe = get_three_dataframes(
+        dataset_dir, lstm=config.MODEL.LSTM, soft_train=soft_train)
 
     transform_sequence = get_transform_sequence(config)
 
@@ -103,9 +111,15 @@ def get_dataloaders(config, training_dataset, val_dataset, test_dataset):
                                     num_workers = num_workers)
     return train_dataloader, val_dataloader, test_dataloader
 
-def get_three_dataframes(image_folder, lstm = False):
+def get_three_dataframes(image_folder, lstm = False, soft_train=False):
     """
-    Get images from the dataset directory, create pandas dataframes of image filepaths and ground truths. 
+    Get images from the dataset directory, create pandas dataframes of image filepaths and ground truths.
+
+    soft_train: if True (F1a intervention), the train split's C1/C2/C3 columns
+    hold the raw mean annotator-agreement values in {0, 0.333, 0.667, 1.0}.
+    Val and test always stay MV-rounded so that best-val-mAP selection during
+    training and test-set scoring downstream use the same target as the
+    locked-recipe baseline.
     """
     # Specify directories for the splits
     train_dir = image_folder / 'train'
@@ -123,10 +137,11 @@ def get_three_dataframes(image_folder, lstm = False):
     val_file = 'annotation_ds_coco.json'
     test_file = 'annotation_ds_coco.json'
 
-    # Create dataframe with filepaths for individual images along with ground truth labels
-    train_dataframe = get_dataframe(train_dir / train_file)
-    val_dataframe = get_dataframe(val_dir / val_file)
-    test_dataframe = get_dataframe(test_dir / test_file)
+    # Create dataframe with filepaths for individual images along with ground
+    # truth labels. Train may be soft; val and test are always MV.
+    train_dataframe = get_dataframe(train_dir / train_file, soft=soft_train)
+    val_dataframe = get_dataframe(val_dir / val_file, soft=False)
+    test_dataframe = get_dataframe(test_dir / test_file, soft=False)
     if lstm:
         # Add unlabelled images to the dataframe
         with open(image_folder / 'all' / 'annotation_coco.json', 'r') as file:
@@ -218,10 +233,15 @@ class EndoscapesSwinCVS_Dataset(Dataset):
 
         return images, label
 
-def get_dataframe(json_path):
+def get_dataframe(json_path, soft=False):
     """
     Get dataframes of the dataset splits in columns:
     idx | vid | frame | C1 | C2 | C3
+
+    soft: if False (default, baseline behaviour), C1/C2/C3 are MV-rounded
+    integer labels in {0, 1}. If True (F1a intervention on the train split
+    only), C1/C2/C3 are the raw mean annotator-agreement values in
+    {0, 0.333, 0.667, 1.0}.
     """
     with open(json_path, 'r') as file:
         data = json.load(file)
@@ -238,9 +258,14 @@ def get_dataframe(json_path):
         file_name = file_name.split('_')
         vid_i = file_name[0]
         frame_i = file_name[1]
-        C1_i = round(i['ds'][0])
-        C2_i = round(i['ds'][1])
-        C3_i = round(i['ds'][2])
+        if soft:
+            C1_i = float(i['ds'][0])
+            C2_i = float(i['ds'][1])
+            C3_i = float(i['ds'][2])
+        else:
+            C1_i = round(i['ds'][0])
+            C2_i = round(i['ds'][1])
+            C3_i = round(i['ds'][2])
 
         # Put in list
         vid.append(vid_i)

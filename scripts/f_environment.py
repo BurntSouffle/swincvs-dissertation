@@ -144,6 +144,13 @@ def validate_config(config):
         except:
             print('Backbone weights: None!')
     
+    # F1a intervention: append _F1a before the seed suffix when training
+    # uses soft annotator-agreement labels. Backward-compatible via hasattr —
+    # baseline configs (no SOFT_TRAIN_LABELS field) get unchanged names.
+    if (hasattr(config.TRAIN, 'SOFT_TRAIN_LABELS')
+            and config.TRAIN.SOFT_TRAIN_LABELS):
+        experiment_name += "_F1a"
+
     if config.MODEL.INFERENCE:
         if 'sd' in config.MODEL.INFERENCE_WEIGHTS:
             inference_seed = find_seed_in_weight(config.MODEL.INFERENCE_WEIGHTS)
@@ -153,7 +160,7 @@ def validate_config(config):
             experiment_name += f"_sd{config.SEED}"
 
         return experiment_name
-    
+
     experiment_name += f"_sd{config.SEED}"
 
     return experiment_name
