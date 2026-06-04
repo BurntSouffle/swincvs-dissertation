@@ -1,0 +1,29 @@
+# Experiment 3: RGB + Soft Masks (SAM2 Confidence, 1,933 frames)
+# Projection (5ch->3ch) + Frozen SwinV2 backbone + Trainable LSTM head
+# Uses SAM2 confidence scores [0-1] instead of binary masks
+
+experiment_name: 'exp3_soft_masks'
+seed: 42
+
+# Data
+dataset_dir: 'C:\Users\sufia\Documents\Uni\Masters\DISSERTATION\endoscapes'
+dataset_type: 'soft'  # Use soft mask dataset (SAM2 confidence)
+use_masks: true  # RGB + GB confidence + Tool confidence
+
+# Model
+checkpoint_path: 'C:\Users\sufia\Documents\Uni\Masters\DISSERTATION\SwinCVS\weights\SwinCVS_E2E_MC_IMNP_sd5_bestMAP.pt'
+lstm_hidden: 256
+lstm_layers: 2
+dropout: 0.3
+
+# Training (identical to Exp 2 for fair comparison)
+epochs: 30
+batch_size: 8
+learning_rate: 0.001
+weight_decay: 0.0001
+patience: 7
+
+# Class weights (same as Exp 2)
+class_weights: [3.0, 4.0, 2.5]
+
+num_workers: 0

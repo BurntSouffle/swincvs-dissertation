@@ -1,0 +1,30 @@
+# Experiment 2A: RGB Only with Synthetic Mask Dataset (1,933 frames)
+# Frozen SwinV2 backbone + Trainable LSTM head
+# Baseline for comparison with synthetic masks
+
+experiment_name: 'exp2a_synthetic_rgb_only'
+seed: 42
+
+# Data
+dataset_dir: 'C:\Users\sufia\Documents\Uni\Masters\DISSERTATION\endoscapes'
+dataset_type: 'synthetic'  # Use synthetic mask dataset
+use_masks: false  # RGB only
+
+# Model
+checkpoint_path: 'C:\Users\sufia\Documents\Uni\Masters\DISSERTATION\SwinCVS\weights\SwinCVS_E2E_MC_IMNP_sd5_bestMAP.pt'
+lstm_hidden: 256
+lstm_layers: 2
+dropout: 0.3
+
+# Training
+epochs: 30
+batch_size: 8
+learning_rate: 0.001
+weight_decay: 0.0001
+patience: 7
+
+# Class weights (computed from 1,933 BBox201 frames)
+# Approximate based on typical CVS distribution
+class_weights: [3.0, 4.0, 2.5]
+
+num_workers: 0

@@ -1,0 +1,30 @@
+# Run A: RGB Only (Baseline)
+# Frozen SwinV2 backbone + Trainable LSTM head
+
+experiment_name: 'run_a_rgb_only'
+seed: 42
+
+# Data
+dataset_dir: 'C:\Users\sufia\Documents\Uni\Masters\DISSERTATION\endoscapes'
+use_masks: false  # RGB only
+
+# Model
+checkpoint_path: 'C:\Users\sufia\Documents\Uni\Masters\DISSERTATION\SwinCVS\weights\SwinCVS_E2E_MC_IMNP_sd5_bestMAP.pt'
+lstm_hidden: 256
+lstm_layers: 2
+dropout: 0.3
+
+# Training
+epochs: 30
+batch_size: 8
+learning_rate: 0.001  # Higher LR since only training head
+weight_decay: 0.0001
+patience: 7  # Early stopping patience
+
+# Class weights (inverse frequency from 493 GT mask frames)
+# C1: 86 pos / 407 neg -> weight ~4.7
+# C2: 66 pos / 427 neg -> weight ~6.5
+# C3: 104 pos / 389 neg -> weight ~3.7
+class_weights: [4.7, 6.5, 3.7]
+
+num_workers: 0  # Set to 0 for Windows compatibility

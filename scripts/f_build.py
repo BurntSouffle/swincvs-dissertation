@@ -33,7 +33,7 @@ def build_model(config):
                 print(f"\nLoading backbone weight {config.BACKBONE.PRETRAINED}")
                 model.head = nn.Linear(in_features=1024, out_features=3, bias=True)
                 weights = 'weights/' + config.BACKBONE.PRETRAINED
-                model.load_state_dict(torch.load(weights))
+                model.load_state_dict(torch.load(weights, weights_only=True))
             print(f"Backbone weights loaded successfully!")
         except:
             print("Backbone NOT pretrained!")

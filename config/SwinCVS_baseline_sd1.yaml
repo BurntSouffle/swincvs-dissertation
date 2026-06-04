@@ -1,26 +1,38 @@
+# Locked-recipe baseline, seed 1. Differs from SwinCVS_config.yaml only in:
+#   - EXPERIMENT_NAME (so the saved weight is uniquely named)
+#   - SEED = 1
+#   - BATCH_SIZE = 4 (A100 80GB; locked recipe)
+#   - DATASET_DIR = /workspace
+# Everything else mirrors the recipe audit in
+# swincvs_analysis (Task 1 report dated 2026-06-03).
+# Dead config keys (LR_SCHEDULER, WARMUP_*, BASE_LR, MIN_LR) are LEFT IN PLACE
+# only because SwinCVS.py ignores them; do not enable them.
+
 # GENERAL PARAMS
-EXPERIMENT_NAME: 'baseline_original_swincvs' # Overrides automatic experiment naming
-SEED: 5
-DATASET_DIR: null # Defaults to parent of SwinCVS dir; override with --dataset_dir or env DATASET_DIR
+EXPERIMENT_NAME: 'SwinCVS_baseline_sd1'
+SEED: 1
+DATASET_DIR: '/workspace'
+
 # SWINCVS MODEL PARAMS
 MODEL:
   LSTM: True
   LSTM_PARAMS:
     NUM_LAYERS: 2
     HIDDEN_SIZE: 256
-  E2E: True # Decides if backbone is NOT frozen in training
-  MULTICLASSIFIER: True # Classifier WILL NOT be implemented if E2E=False
+  E2E: True
+  MULTICLASSIFIER: True
   INFERENCE: False
   INFERENCE_WEIGHTS: 'SwinV2LSTM_e2e_raw_mc_V3_sd5_bestMAP.pt'
+
 # TRAINING PARAMS
 TRAIN:
   EPOCHS: 8
-  LIMIT_DATA_FRACTION: 1 # Limits how much data is used for constructing the train, val, test datasets. 1 = 100%, 5 = 20% etc.
+  LIMIT_DATA_FRACTION: 1
   TRANSFORMS:
     ENDOSCAPES_MEAN: [0.485, 0.456, 0.406]
     ENDOSCAPES_STD: [0.229, 0.224, 0.225]
     CENTER_CROP: 480
-  BATCH_SIZE: 2  # Reduced from 4 due to OOM on RTX 3080 12GB
+  BATCH_SIZE: 4
   OPTIMIZER:
     NAME: 'adamw'
     EPS: 1.0e-08
@@ -35,15 +47,16 @@ TRAIN:
   MIN_LR: 0.0000001
   MULTICLASSIFIER_ALPHA: 0.8
   SAVE_WEIGHTS: True
-  CHECKPOINT_PATH: null # null if default to weights dir
+  CHECKPOINT_PATH: null
   LR_SCHEDULER:
     NAME: 'cosine'
     WARMUP_PREFIX: False
   CLIP_GRAD: 5
   ACCUMULATION_STEPS: 1
+
 # SWINV2 BACKBONE PARAMS
 BACKBONE:
-  PRETRAINED: 'swinv2_base_patch4_window12to24_192to384_22kto1k_ft.pth' #'Swin_backbone_no_augm_sd4_bestMAP.pt' - for backbone/E2E use IMGNet weights, for E2E use backbone weights
+  PRETRAINED: 'swinv2_base_patch4_window12to24_192to384_22kto1k_ft.pth'
   DROP_PATH_RATE: 0.2
   DROP_RATE: 0.0
   NUM_CLASSES: 1000
@@ -60,4 +73,3 @@ BACKBONE:
     APE: False
     PATCH_NORM: True
   USE_CHECKPOINT: False
-  
