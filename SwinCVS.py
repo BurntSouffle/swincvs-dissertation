@@ -32,9 +32,22 @@ verify_results_weights_folder(pwd)
 # Load config
 parser = argparse.ArgumentParser(description="Run SwinCVS with specified config")
 parser.add_argument('--config_path', type=str, required=True, help='Path to config YAML file')
+parser.add_argument('--dataset_dir', type=str, default=None,
+                    help='Root dir containing endoscapes/ folder')
 args = parser.parse_args()
 config_path = args.config_path
 config, experiment_name = get_config(config_path)
+
+# Resolve dataset directory: CLI arg > env var > config value > cwd
+import os as _os
+dataset_dir = (args.dataset_dir
+               or _os.environ.get("DATASET_DIR")
+               or config.DATASET_DIR
+               or str(pwd))
+config.defrost()
+config.DATASET_DIR = dataset_dir
+config.freeze()
+print(f"Dataset dir: {config.DATASET_DIR}")
 
 seed = config.SEED
 set_deterministic_behaviour(seed)
@@ -55,19 +68,22 @@ model = build_model(config)
 print('Full model initialised successfully!\n')
 
 # Load saved weights for inference
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 if config.MODEL.INFERENCE:
     weights = "weights/" + config.MODEL.INFERENCE_WEIGHTS
-    model.load_state_dict(torch.load(weights))
+    model.load_state_dict(torch.load(weights, map_location=DEVICE))
     print(f"Trained SwinCVS weights loaded successfully for INFERENCE - name: {config.MODEL.INFERENCE_WEIGHTS}")
-model.to('cuda')
-torch.cuda.empty_cache()
+model.to(DEVICE)
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
 
 ##############################################################################################
 ##############################################################################################
 optimizer = build_optimizer(config, model)
 loss_scaler = NativeScalerWithGradNormCount()
-class_weights = torch.tensor(config.TRAIN.CLASS_WEIGHTS).to('cuda')
-criterion = nn.BCEWithLogitsLoss(weight=class_weights).to('cuda')
+class_weights = torch.tensor(config.TRAIN.CLASS_WEIGHTS).to(DEVICE)
+criterion = nn.BCEWithLogitsLoss(weight=class_weights).to(DEVICE)
 
 ##############################################################################################
 ##############################################################################################
@@ -86,6 +102,8 @@ if not config.MODEL.INFERENCE:
     if config.MODEL.MULTICLASSIFIER:
         multiclasifier_alpha = config.TRAIN.MULTICLASSIFIER_ALPHA
         multiclasifier_beta = 1-multiclasifier_alpha
+
+    best_epoch = 0
 
     print("Beginning training...")
     for epoch in range(num_epochs):
@@ -107,7 +125,7 @@ if not config.MODEL.INFERENCE:
             print(f"Processing batch: {idx+1:04}/{len(train_dataloader):04}", end="\r")
 
             # Get predictions
-            samples, targets = samples.to('cuda'), targets.to('cuda')
+            samples, targets = samples.to(DEVICE), targets.to(DEVICE)
             with torch.amp.autocast("cuda", enabled=True):
                 if config.MODEL.E2E and config.MODEL.MULTICLASSIFIER:
                     outputs_swin, outputs_lstm = model(samples)
@@ -138,7 +156,7 @@ if not config.MODEL.INFERENCE:
             for idx, (samples, targets) in enumerate(val_dataloader):
                 print(f"Processing batch: {idx+1:04}/{len(val_dataloader):04}", end="\r")
                 # Get predictions
-                samples, targets = samples.to('cuda'), targets.to('cuda')
+                samples, targets = samples.to(DEVICE), targets.to(DEVICE)
                 if config.MODEL.E2E and config.MODEL.MULTICLASSIFIER:
                     outputs_swin, outputs_lstm = model(samples)
                 else:
@@ -197,16 +215,20 @@ if not config.MODEL.INFERENCE:
         # Save weights of the best epoch
         if mAP >= best_mAP:
             best_mAP = mAP
+            best_epoch = epoch + 1
             print(f"New best result (Epoch {epoch+1}), saving weights...")
             save_weights(model, config, experiment_name)
         else:
             print('\n')
 
-
-
-######
-# ADD CHOOSING AND LOADING BEST EPOCH FROM TRAINIG IF NOT INFERENCE
-best_epoch = 0
+    # Reload best-val-mAP weights for test eval. Without this, the test loop
+    # below would score whatever is in memory at end of training (the final
+    # epoch), which is the overfit model — not the model selected by val mAP.
+    best_weights_path = (pwd / 'weights') / f'{experiment_name}_bestMAP.pt'
+    print(f"\nLoading best-val checkpoint for test eval: {best_weights_path} "
+          f"(epoch {best_epoch}, val mAP={best_mAP:.4f})")
+    model.load_state_dict(torch.load(best_weights_path, map_location=DEVICE))
+    model.to(DEVICE)
 
 # Test time measurement variables
 start_time = 0
@@ -229,7 +251,7 @@ with torch.inference_mode():
         start_time = time.time()
 
         # Get preds
-        samples, targets = samples.to('cuda'), targets.to('cuda')
+        samples, targets = samples.to(DEVICE), targets.to(DEVICE)
         
         if config.MODEL.E2E and config.MODEL.MULTICLASSIFIER and not config.MODEL.INFERENCE:
             outputs_swin, outputs_lstm = model(samples)

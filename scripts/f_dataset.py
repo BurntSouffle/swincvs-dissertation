@@ -1,4 +1,5 @@
 import os
+import sys
 import torch
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
@@ -38,7 +39,7 @@ def get_datasets(config):
 def check_dataset(config):
     """
     Checks whether specified folder contains valid endoscapes dataset. Redownloads if checksum failed, or folder missing.
-    Requires config.DATASET_DIR to lead to the folder containing 'endoscapes' or null - will download to repo dir. 
+    Requires config.DATASET_DIR to lead to the folder containing 'endoscapes' or null - will download to repo dir.
     """
     dataset_path = config.DATASET_DIR
 
@@ -54,43 +55,52 @@ def check_dataset(config):
     if all_imgs_dir.exists() and all_imgs_dir.is_dir():
         file_count = sum(1 for f in all_imgs_dir.iterdir() if f.is_file())
         if file_count != 58586:
-            response = input(f"Dataset checksum failed. Attempting to remove the '{dataset_dir}' and redownload Endoscapes dataset. Proceed? (Y/N): ").strip().upper()
-            while response not in ['Y', 'N']:
-                input(f"Please answer with Y/N only")
-            if response == 'Y':
-                print('Removing pre-existing dataset...')
-                shutil.rmtree(dataset_dir)
-                print('Re-downloading dataset')
-                download_extract_zip(dataset_dir.parent, 'https://s3.unistra.fr/camma_public/datasets/endoscapes/endoscapes.zip')
-            if response == 'N':
-                print("Continuing with the originally specified dataset...")
+            # Non-interactive: warn but continue (avoids hanging on remote runs)
+            if os.environ.get("SWINCVS_AUTO", "0") == "1" or not sys.stdin.isatty():
+                print(f"WARNING: Dataset checksum failed ({file_count}/58586 files). Continuing anyway.")
+            else:
+                response = input(f"Dataset checksum failed. Attempting to remove the '{dataset_dir}' and redownload Endoscapes dataset. Proceed? (Y/N): ").strip().upper()
+                while response not in ['Y', 'N']:
+                    input(f"Please answer with Y/N only")
+                if response == 'Y':
+                    print('Removing pre-existing dataset...')
+                    shutil.rmtree(dataset_dir)
+                    print('Re-downloading dataset')
+                    download_extract_zip(dataset_dir.parent, 'https://s3.unistra.fr/camma_public/datasets/endoscapes/endoscapes.zip')
+                if response == 'N':
+                    print("Continuing with the originally specified dataset...")
     else:
-        print('Dataset folder not found. Downloading dataset...')
-        if dataset_dir.exists() and dataset_dir.is_dir():
-            shutil.rmtree(dataset_dir)
-        print('Dataset downloaded. Unpacking...')
-        download_extract_zip(dataset_dir.parent, 'https://s3.unistra.fr/camma_public/datasets/endoscapes/endoscapes.zip')
+        if not dataset_dir.exists():
+            raise FileNotFoundError(
+                f"Dataset not found at {dataset_dir}. "
+                f"Set DATASET_DIR env var or --dataset_dir to the directory containing 'endoscapes/'."
+            )
+        print(f"WARNING: {all_imgs_dir} not found, but {dataset_dir} exists. Continuing.")
     return dataset_dir
 
 def get_dataloaders(config, training_dataset, val_dataset, test_dataset):
     """
     Create dataloaders from a given training datasets
     """
-    print(f"Batch size: {config.TRAIN.BATCH_SIZE}")
+    num_workers = int(os.environ.get("NUM_WORKERS", "0"))
+    print(f"Batch size: {config.TRAIN.BATCH_SIZE}, num_workers: {num_workers}")
     train_dataloader = DataLoader(  training_dataset,
                                     batch_size = config.TRAIN.BATCH_SIZE,
                                     pin_memory = True,
-                                    shuffle = True)
+                                    shuffle = True,
+                                    num_workers = num_workers)
 
     val_dataloader = DataLoader(    val_dataset,
                                     batch_size = 1,
                                     shuffle = False,
-                                    pin_memory = True)
+                                    pin_memory = True,
+                                    num_workers = num_workers)
 
     test_dataloader = DataLoader(   test_dataset,
                                     batch_size = 1,
                                     shuffle = False,
-                                    pin_memory = True)
+                                    pin_memory = True,
+                                    num_workers = num_workers)
     return train_dataloader, val_dataloader, test_dataloader
 
 def get_three_dataframes(image_folder, lstm = False):
@@ -102,10 +112,16 @@ def get_three_dataframes(image_folder, lstm = False):
     val_dir  = image_folder / 'val'
     test_dir = image_folder / 'test'
 
-    # Get filepaths for individual images
-    train_file = [x for x in os.listdir(train_dir) if 'json' and 'ds_coco' in x][0]
-    val_file = [x for x in os.listdir(val_dir) if 'json' and 'ds_coco' in x][0]
-    test_file = [x for x in os.listdir(test_dir) if 'json' and 'ds_coco' in x][0]
+    # Hardcoded to the MV annotation file. The original glob
+    # `if 'json' and 'ds_coco' in x` short-circuits to `if 'ds_coco' in x`,
+    # which also matches annotation_ds_coco_optimal.json and picks whichever
+    # os.listdir returns first (alphabetical on NTFS, inode order on Linux —
+    # different filesystems silently selected different ground truths).
+    # The multihead experiment uses get_datasets_custom_json with an
+    # explicit json_name; this single-head path needs the same explicitness.
+    train_file = 'annotation_ds_coco.json'
+    val_file = 'annotation_ds_coco.json'
+    test_file = 'annotation_ds_coco.json'
 
     # Create dataframe with filepaths for individual images along with ground truth labels
     train_dataframe = get_dataframe(train_dir / train_file)
