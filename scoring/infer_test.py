@@ -1,15 +1,19 @@
-"""Generic test-set inference for a SwinCVS checkpoint.
+"""Generic dataloader inference for a SwinCVS checkpoint.
 
-Loads {WEIGHTS} into a SwinCVS model in INFERENCE mode, iterates the test
-dataloader, writes predictions CSV in the predictions.csv schema:
+Loads {WEIGHTS} into a SwinCVS model in INFERENCE mode, iterates the
+chosen split's dataloader, writes predictions CSV in the schema:
   video_id, frame, c{1,2,3}_pred, c{1,2,3}_label
 
-Used by launch_seed1.sh on the RunPod pod after training.
+The labels in the CSV are whatever the SwinCVS dataset returns for that
+split — MV-rounded for val and test, soft-or-MV for train depending on
+config.TRAIN.SOFT_TRAIN_LABELS. F3-style threshold-fitting flows want
+val predictions; baseline scoring flows want test predictions.
 
 Usage:
   python -u /workspace/SwinCVS/scoring/infer_test.py \
     --config config/SwinCVS_baseline_sd1.yaml \
     --weights SwinCVS_E2E_MC_IMNP_sd1_bestMAP.pt \
+    --split test \
     --out /workspace/experiment_outputs/baseline_sd1/predictions_sd1.csv
 """
 from __future__ import annotations
@@ -38,6 +42,8 @@ def main():
     p.add_argument("--config", required=True)
     p.add_argument("--weights", required=True,
                    help="filename inside weights/ (NOT a path)")
+    p.add_argument("--split", default="test", choices=("train", "val", "test"),
+                   help="which dataloader to iterate (default: test)")
     p.add_argument("--out", required=True, help="output CSV path")
     args = p.parse_args()
 
@@ -48,9 +54,13 @@ def main():
     cfg.freeze()
     set_deterministic_behaviour(cfg.SEED)
 
-    _, _, test_ds = get_datasets(cfg)
-    _, _, test_dl = get_dataloaders(cfg, test_ds, test_ds, test_ds)
-    print(f"test dataset: {len(test_ds)} sequences")
+    train_ds, val_ds, test_ds = get_datasets(cfg)
+    train_dl, val_dl, test_dl = get_dataloaders(cfg, train_ds, val_ds, test_ds)
+    ds_map = {"train": train_ds, "val": val_ds, "test": test_ds}
+    dl_map = {"train": train_dl, "val": val_dl, "test": test_dl}
+    target_ds = ds_map[args.split]
+    target_dl = dl_map[args.split]
+    print(f"{args.split} dataset: {len(target_ds)} sequences")
 
     model = build_model(cfg)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -59,14 +69,14 @@ def main():
     model.load_state_dict(state)
     model.to(device).eval()
 
-    df = test_ds.image_dataframe
+    df = target_ds.image_dataframe
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
 
     rows = []
     t0 = time.time()
     with torch.inference_mode():
-        for idx, (samples, targets) in enumerate(test_dl):
+        for idx, (samples, targets) in enumerate(target_dl):
             samples = samples.to(device)
             probs = torch.sigmoid(model(samples)).squeeze(0).cpu().numpy()
             t = targets.squeeze(0).numpy()
@@ -81,8 +91,8 @@ def main():
             })
             if (idx + 1) % 200 == 0 or idx == 0:
                 elapsed = time.time() - t0
-                eta = elapsed / (idx + 1) * (len(test_dl) - idx - 1)
-                print(f"  {idx+1}/{len(test_dl)}  elapsed={elapsed:.1f}s  eta={eta:.1f}s")
+                eta = elapsed / (idx + 1) * (len(target_dl) - idx - 1)
+                print(f"  {idx+1}/{len(target_dl)}  elapsed={elapsed:.1f}s  eta={eta:.1f}s")
 
     print(f"inference done in {time.time()-t0:.1f}s ({len(rows)} samples)")
     fields = ["video_id", "frame", "c1_pred", "c2_pred", "c3_pred",
