@@ -150,6 +150,11 @@ def validate_config(config):
     if (hasattr(config.TRAIN, 'SOFT_TRAIN_LABELS')
             and config.TRAIN.SOFT_TRAIN_LABELS):
         experiment_name += "_F1a"
+    # F1b intervention: append _F1b before the seed suffix when the
+    # disagreement-prediction auxiliary head is active.
+    if (hasattr(config.MODEL, 'F1B_DISAGREEMENT_HEAD')
+            and config.MODEL.F1B_DISAGREEMENT_HEAD):
+        experiment_name += "_F1b"
 
     if config.MODEL.INFERENCE:
         if 'sd' in config.MODEL.INFERENCE_WEIGHTS:

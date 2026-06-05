@@ -1,0 +1,82 @@
+# F1b — Disagreement-prediction auxiliary head intervention.
+# Identical to SwinCVS_baseline_sd1.yaml except for the added MODEL.F1B_*
+# fields below. Shared SwinV2+LSTM trunk; extra fc_lstm_dis head predicts
+# whether annotators are NOT unanimous on each criterion. Combined loss:
+#   L_total = baseline_MV_loss + 1.0 * BCE(disagree, pos_weight=...)
+# lambda = 1.0 (locked, no tuning per the F1b brief).
+#
+# Seeds 2 and 3 are produced by the launcher overriding SEED at runtime.
+
+# GENERAL PARAMS
+EXPERIMENT_NAME: 'SwinCVS_F1b_sd1'
+SEED: 1
+DATASET_DIR: '/workspace'
+
+# SWINCVS MODEL PARAMS
+MODEL:
+  LSTM: True
+  LSTM_PARAMS:
+    NUM_LAYERS: 2
+    HIDDEN_SIZE: 256
+  E2E: True
+  MULTICLASSIFIER: True
+  INFERENCE: False
+  INFERENCE_WEIGHTS: 'SwinV2LSTM_e2e_raw_mc_V3_sd5_bestMAP.pt'
+  # ---- F1b auxiliary disagreement head ----
+  F1B_DISAGREEMENT_HEAD: True
+  # Inverse-frequency pos_weight per criterion, computed from the TRAIN split's
+  # contested fraction (see swincvs_analysis/harness/F1b_task1_balance.{json,md}):
+  #   C1: pos_weight = 5061 / 1899 = 2.6651
+  #   C2: pos_weight = 5866 / 1094 = 5.3620
+  #   C3: pos_weight = 4857 / 2103 = 2.3096
+  F1B_DIS_POS_WEIGHT: [2.6651, 5.3620, 2.3096]
+
+# TRAINING PARAMS
+TRAIN:
+  EPOCHS: 8
+  LIMIT_DATA_FRACTION: 1
+  TRANSFORMS:
+    ENDOSCAPES_MEAN: [0.485, 0.456, 0.406]
+    ENDOSCAPES_STD: [0.229, 0.224, 0.225]
+    CENTER_CROP: 480
+  BATCH_SIZE: 4
+  OPTIMIZER:
+    NAME: 'adamw'
+    EPS: 1.0e-08
+    BETAS: [0.9, 0.999]
+    WEIGHT_DECAY: 0.02
+    ENCODER_LR: 0.00001
+    CLASSIFIER_LR: 0.001
+  CLASS_WEIGHTS: [3.19852941, 4.46153846, 2.79518072]
+  WARMUP_EPOCHS: 4
+  WARMUP_LR: 0.001
+  BASE_LR: 0.001
+  MIN_LR: 0.0000001
+  MULTICLASSIFIER_ALPHA: 0.8
+  SAVE_WEIGHTS: True
+  CHECKPOINT_PATH: null
+  LR_SCHEDULER:
+    NAME: 'cosine'
+    WARMUP_PREFIX: False
+  CLIP_GRAD: 5
+  ACCUMULATION_STEPS: 1
+
+# SWINV2 BACKBONE PARAMS
+BACKBONE:
+  PRETRAINED: 'swinv2_base_patch4_window12to24_192to384_22kto1k_ft.pth'
+  DROP_PATH_RATE: 0.2
+  DROP_RATE: 0.0
+  NUM_CLASSES: 1000
+  SWINV2:
+    PATCH_SIZE: 4
+    IN_CHANS: 3
+    EMBED_DIM: 128
+    DEPTHS: [ 2, 2, 18, 2 ]
+    NUM_HEADS: [ 4, 8, 16, 32 ]
+    WINDOW_SIZE: 24
+    PRETRAINED_WINDOW_SIZES: [ 12, 12, 12, 6 ]
+    MLP_RATIO: 4
+    QKV_BIAS: True
+    APE: False
+    PATCH_NORM: True
+  USE_CHECKPOINT: False

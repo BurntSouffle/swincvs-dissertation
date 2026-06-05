@@ -102,6 +102,13 @@ def build_optimizer(config, model, **kwargs):
     else:
         parameters2= [  {'params': model.parameters(), 'lr': config.TRAIN.OPTIMIZER.ENCODER_LR}]
 
+    # F1b auxiliary disagreement head shares the classifier LR group with
+    # fc_lstm. Only added if the model has the head (config flag controls
+    # whether the head exists in the first place).
+    if hasattr(model, 'fc_lstm_dis'):
+        parameters2.append({'params': model.fc_lstm_dis.parameters(),
+                            'lr': config.TRAIN.OPTIMIZER.CLASSIFIER_LR})
+
     if opt_lower == 'adamw':
         optimizer = optim.AdamW(parameters2, eps=config.TRAIN.OPTIMIZER.EPS, betas=config.TRAIN.OPTIMIZER.BETAS,
                                 weight_decay=config.TRAIN.OPTIMIZER.WEIGHT_DECAY)

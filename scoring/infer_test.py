@@ -73,22 +73,48 @@ def main():
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    # F1b detection: the model has a fc_lstm_dis head iff trained with
+    # MODEL.F1B_DISAGREEMENT_HEAD=True. When present, dataset labels are
+    # 6-vectors [MV, disagreement] and the model returns (mv_logits,
+    # dis_logits). We write a second CSV alongside the MV one with the
+    # disagreement predictions and labels, harness-compatible schema:
+    #   video_id, frame, d1_pred, d2_pred, d3_pred, d1_label, d2_label, d3_label
+    is_f1b = hasattr(model, "fc_lstm_dis")
+    if is_f1b:
+        dis_out = out.parent / out.name.replace("predictions_", "predictions_disagreement_", 1)
+        dis_rows = []
+        print(f"F1b detected — also writing disagreement-head predictions to {dis_out}")
+
     rows = []
     t0 = time.time()
     with torch.inference_mode():
         for idx, (samples, targets) in enumerate(target_dl):
             samples = samples.to(device)
-            probs = torch.sigmoid(model(samples)).squeeze(0).cpu().numpy()
+            if is_f1b:
+                mv_logits, dis_logits = model(samples)
+                mv_probs = torch.sigmoid(mv_logits).squeeze(0).cpu().numpy()
+                dis_probs = torch.sigmoid(dis_logits).squeeze(0).cpu().numpy()
+            else:
+                mv_probs = torch.sigmoid(model(samples)).squeeze(0).cpu().numpy()
             t = targets.squeeze(0).numpy()
             stem = Path(df.iloc[idx]["f4"]).stem
             vid, frame = stem.split("_", 1)
             rows.append({
                 "video_id": int(vid), "frame": int(frame),
-                "c1_pred": float(probs[0]), "c2_pred": float(probs[1]),
-                "c3_pred": float(probs[2]),
+                "c1_pred": float(mv_probs[0]), "c2_pred": float(mv_probs[1]),
+                "c3_pred": float(mv_probs[2]),
                 "c1_label": int(t[0]), "c2_label": int(t[1]),
                 "c3_label": int(t[2]),
             })
+            if is_f1b:
+                # F1b targets are 6-vec [MV, disagreement]; slice indices 3..6
+                dis_rows.append({
+                    "video_id": int(vid), "frame": int(frame),
+                    "d1_pred": float(dis_probs[0]), "d2_pred": float(dis_probs[1]),
+                    "d3_pred": float(dis_probs[2]),
+                    "d1_label": int(t[3]), "d2_label": int(t[4]),
+                    "d3_label": int(t[5]),
+                })
             if (idx + 1) % 200 == 0 or idx == 0:
                 elapsed = time.time() - t0
                 eta = elapsed / (idx + 1) * (len(target_dl) - idx - 1)
@@ -102,6 +128,14 @@ def main():
         w.writeheader()
         w.writerows(rows)
     print(f"wrote {out} ({len(rows)} rows)")
+    if is_f1b:
+        dis_fields = ["video_id", "frame", "d1_pred", "d2_pred", "d3_pred",
+                      "d1_label", "d2_label", "d3_label"]
+        with dis_out.open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=dis_fields)
+            w.writeheader()
+            w.writerows(dis_rows)
+        print(f"wrote {dis_out} ({len(dis_rows)} rows)")
 
 
 if __name__ == "__main__":

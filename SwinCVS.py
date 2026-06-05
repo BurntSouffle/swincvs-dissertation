@@ -85,6 +85,25 @@ loss_scaler = NativeScalerWithGradNormCount()
 class_weights = torch.tensor(config.TRAIN.CLASS_WEIGHTS).to(DEVICE)
 criterion = nn.BCEWithLogitsLoss(weight=class_weights).to(DEVICE)
 
+# F1b auxiliary head: predicts whether annotators are NOT unanimous
+# (1 = contested 2-1 split, 0 = unanimous) on each criterion. Combined loss:
+#     L_total = baseline_MV_loss  +  lambda * BCEWithLogitsLoss(disagree, pos_weight=...)
+# lambda is locked at 1.0 per the F1b brief (no tuning, no goalpost moves).
+# The disagreement head's pos_weight is inverse-frequency from the TRAIN
+# contested fraction per criterion — these are pre-registered in
+# swincvs_analysis/harness/F1b_task1_balance.{json,md} (Task 1 of the brief).
+IS_F1B = (hasattr(config.MODEL, 'F1B_DISAGREEMENT_HEAD')
+          and config.MODEL.F1B_DISAGREEMENT_HEAD)
+if IS_F1B:
+    f1b_lambda = 1.0
+    f1b_dis_pos_weight = torch.tensor(
+        list(config.MODEL.F1B_DIS_POS_WEIGHT)
+        if hasattr(config.MODEL, 'F1B_DIS_POS_WEIGHT')
+        else [2.6651, 5.3620, 2.3096]).to(DEVICE)
+    f1b_dis_criterion = nn.BCEWithLogitsLoss(pos_weight=f1b_dis_pos_weight).to(DEVICE)
+    print(f"F1b active. lambda={f1b_lambda} (locked).  "
+          f"disagreement-head pos_weight = {f1b_dis_pos_weight.tolist()}")
+
 ##############################################################################################
 ##############################################################################################
 # TRAINING #
@@ -126,17 +145,26 @@ if not config.MODEL.INFERENCE:
 
             # Get predictions
             samples, targets = samples.to(DEVICE), targets.to(DEVICE)
+            # F1b: targets is (B, 6) = [MV, disagreement]; baseline/F1a: (B, 3).
+            mv_targets = targets[:, :3] if IS_F1B else targets
+            dis_targets = targets[:, 3:] if IS_F1B else None
             with torch.amp.autocast("cuda", enabled=True):
-                if config.MODEL.E2E and config.MODEL.MULTICLASSIFIER:
+                if config.MODEL.E2E and config.MODEL.MULTICLASSIFIER and IS_F1B:
+                    outputs_swin, outputs_lstm, outputs_dis = model(samples)
+                elif config.MODEL.E2E and config.MODEL.MULTICLASSIFIER:
                     outputs_swin, outputs_lstm = model(samples)
+                elif IS_F1B:
+                    outputs_lstm, outputs_dis = model(samples)
                 else:
                     outputs_lstm = model(samples)
 
             # Get loss and backpropagation
             if config.MODEL.E2E and config.MODEL.MULTICLASSIFIER:
-                loss_train = multiclasifier_alpha*criterion(outputs_swin, targets) + multiclasifier_beta*criterion(outputs_lstm, targets)
+                loss_train = multiclasifier_alpha*criterion(outputs_swin, mv_targets) + multiclasifier_beta*criterion(outputs_lstm, mv_targets)
             else:
-                loss_train = criterion(outputs_lstm, targets)
+                loss_train = criterion(outputs_lstm, mv_targets)
+            if IS_F1B:
+                loss_train = loss_train + f1b_lambda * f1b_dis_criterion(outputs_dis, dis_targets)
 
             is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
             grad_norm = loss_scaler(loss_train, optimizer, clip_grad=config.TRAIN.CLIP_GRAD,
@@ -152,27 +180,39 @@ if not config.MODEL.INFERENCE:
         val_probabilities = []
         val_predictions = []
         val_targets = []
+        val_dis_probabilities = []   # F1b only
+        val_dis_targets = []         # F1b only
         with torch.inference_mode():
             for idx, (samples, targets) in enumerate(val_dataloader):
                 print(f"Processing batch: {idx+1:04}/{len(val_dataloader):04}", end="\r")
                 # Get predictions
                 samples, targets = samples.to(DEVICE), targets.to(DEVICE)
-                if config.MODEL.E2E and config.MODEL.MULTICLASSIFIER:
+                mv_targets = targets[:, :3] if IS_F1B else targets
+                dis_targets = targets[:, 3:] if IS_F1B else None
+                if config.MODEL.E2E and config.MODEL.MULTICLASSIFIER and IS_F1B:
+                    outputs_swin, outputs_lstm, outputs_dis = model(samples)
+                elif config.MODEL.E2E and config.MODEL.MULTICLASSIFIER:
                     outputs_swin, outputs_lstm = model(samples)
+                elif IS_F1B:
+                    outputs_lstm, outputs_dis = model(samples)
                 else:
                     outputs_lstm = model(samples)
-                
+
                 # Get outputs
                 val_probability = torch.sigmoid(outputs_lstm)
                 val_prediction = torch.round(val_probability)
 
-                # Save outputs
+                # Save outputs (MV-head only — best-val selection uses MV mAP
+                # against MV labels, identical contract to baseline)
                 val_probabilities.append(val_probability.to('cpu'))
                 val_predictions.append(val_prediction.to('cpu'))
-                val_targets.append(targets.to('cpu'))
+                val_targets.append(mv_targets.to('cpu'))
+                if IS_F1B:
+                    val_dis_probabilities.append(torch.sigmoid(outputs_dis).to('cpu'))
+                    val_dis_targets.append(dis_targets.to('cpu'))
 
                 # Loss
-                loss_val = criterion(outputs_lstm, targets)
+                loss_val = criterion(outputs_lstm, mv_targets)
                 val_loss += loss_val.item()
                 torch.cuda.synchronize()
 
@@ -199,6 +239,9 @@ if not config.MODEL.INFERENCE:
                         'C1_map': round(C1_ap, 4), 'C2_map': round(C2_ap, 4), 'C3_map': round(C3_ap, 4),
                         'preds': val_predictions_2save, 'true': val_targets_2save, 'preds_prob': val_probabilities_2save,
                         'train_loss': train_loss, 'val_loss': val_loss}
+        if IS_F1B:
+            epoch_results['dis_preds_prob'] = torch.cat(val_dis_probabilities, dim=0).tolist()
+            epoch_results['dis_true'] = torch.cat(val_dis_targets, dim=0).tolist()
         results_dict[f"Epoch {epoch+1}"] = epoch_results
 
         # Save results
@@ -239,6 +282,8 @@ times = []
 test_probabilities = []
 test_predictions = []
 test_targets = []
+test_dis_probabilities = []   # F1b only
+test_dis_targets = []         # F1b only
 
 len_dataloader = len(test_dataloader)
 print('\nTesting')
@@ -252,13 +297,19 @@ with torch.inference_mode():
 
         # Get preds
         samples, targets = samples.to(DEVICE), targets.to(DEVICE)
-        
-        if config.MODEL.E2E and config.MODEL.MULTICLASSIFIER and not config.MODEL.INFERENCE:
+        mv_targets = targets[:, :3] if IS_F1B else targets
+        dis_targets = targets[:, 3:] if IS_F1B else None
+
+        if config.MODEL.E2E and config.MODEL.MULTICLASSIFIER and not config.MODEL.INFERENCE and IS_F1B:
+            outputs_swin, outputs_lstm, outputs_dis = model(samples)
+        elif config.MODEL.E2E and config.MODEL.MULTICLASSIFIER and not config.MODEL.INFERENCE:
             outputs_swin, outputs_lstm = model(samples)
+        elif IS_F1B:
+            outputs_lstm, outputs_dis = model(samples)
         else:
             outputs_lstm = model(samples)
 
-        # Get outputs
+        # Get outputs (MV head — main metric)
         test_probability = torch.sigmoid(outputs_lstm)
         test_prediction = torch.round(test_probability)
 
@@ -270,7 +321,10 @@ with torch.inference_mode():
         # Save results from a batch to a list
         test_probabilities.append(test_probability.to('cpu'))
         test_predictions.append(test_prediction.to('cpu'))
-        test_targets.append(targets.to('cpu'))
+        test_targets.append(mv_targets.to('cpu'))
+        if IS_F1B:
+            test_dis_probabilities.append(torch.sigmoid(outputs_dis).to('cpu'))
+            test_dis_targets.append(dis_targets.to('cpu'))
 
         torch.cuda.synchronize()
 
@@ -304,6 +358,9 @@ epoch_results = {'avg_bal_acc': round(total_balanced_accuracy, 4),
                 'C1_map': round(C1_ap, 4), 'C2_map': round(C2_ap, 4), 'C3_map': round(C3_ap, 4),
                 'preds': test_predictions_2save, 'true': test_targets_2save, 'preds_prob': test_probabilities_2save,
                 'mean_inference_ms': mean_inference, 'std_inference_ms': std_inference, 'total_inference_s': total_inference}
+if IS_F1B:
+    epoch_results['dis_preds_prob'] = torch.cat(test_dis_probabilities, dim=0).tolist()
+    epoch_results['dis_true'] = torch.cat(test_dis_targets, dim=0).tolist()
 results_dict[f"Testing_@E{best_epoch+1}"] = epoch_results # CHANGE THE BEST EPOCH
 
 with open(pwd / 'results' / f'{experiment_name}_results.json', 'w') as file:

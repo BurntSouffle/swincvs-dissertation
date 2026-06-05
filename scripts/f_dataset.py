@@ -26,8 +26,16 @@ def get_datasets(config):
     # are identical to the baseline. Backward-compatible via hasattr.
     soft_train = (hasattr(config.TRAIN, 'SOFT_TRAIN_LABELS')
                   and config.TRAIN.SOFT_TRAIN_LABELS)
+    # F1b disagreement-prediction auxiliary head: if MODEL.F1B_DISAGREEMENT_HEAD
+    # is True, every split returns a 6-vector label [C1, C2, C3, D1, D2, D3],
+    # where D{1,2,3} = 1 iff the criterion's three annotators were NOT
+    # unanimous on that frame (i.e. 0 < ds < 1). The training loop slices
+    # [:3] for the MV-head loss and [3:] for the disagreement-head loss.
+    include_disagreement = (hasattr(config.MODEL, 'F1B_DISAGREEMENT_HEAD')
+                            and config.MODEL.F1B_DISAGREEMENT_HEAD)
     train_dataframe, val_dataframe, test_dataframe = get_three_dataframes(
-        dataset_dir, lstm=config.MODEL.LSTM, soft_train=soft_train)
+        dataset_dir, lstm=config.MODEL.LSTM, soft_train=soft_train,
+        include_disagreement=include_disagreement)
 
     transform_sequence = get_transform_sequence(config)
 
@@ -111,7 +119,7 @@ def get_dataloaders(config, training_dataset, val_dataset, test_dataset):
                                     num_workers = num_workers)
     return train_dataloader, val_dataloader, test_dataloader
 
-def get_three_dataframes(image_folder, lstm = False, soft_train=False):
+def get_three_dataframes(image_folder, lstm = False, soft_train=False, include_disagreement=False):
     """
     Get images from the dataset directory, create pandas dataframes of image filepaths and ground truths.
 
@@ -120,6 +128,12 @@ def get_three_dataframes(image_folder, lstm = False, soft_train=False):
     Val and test always stay MV-rounded so that best-val-mAP selection during
     training and test-set scoring downstream use the same target as the
     locked-recipe baseline.
+
+    include_disagreement: if True (F1b intervention), each frame's label is a
+    6-vector [C1, C2, C3, D1, D2, D3] where D1/D2/D3 are the disagreement
+    targets (1 = contested 2-1 split, 0 = unanimous). All three splits get
+    the 6-vector format so the disagreement head can be trained on train,
+    selected on val (MV mAP for best-val), and scored on test (AUC + AP).
     """
     # Specify directories for the splits
     train_dir = image_folder / 'train'
@@ -159,9 +173,12 @@ def get_three_dataframes(image_folder, lstm = False, soft_train=False):
         test_dataframe = add_unlabelled_imgs(test_images, test_dataframe)
    
         # Generate 5 frame sequences and update format to include paths to images
-        train_dataframe = get_frame_sequence_dataframe(train_dataframe, train_dir)
-        val_dataframe = get_frame_sequence_dataframe(val_dataframe, val_dir)
-        test_dataframe = get_frame_sequence_dataframe(test_dataframe, test_dir)
+        train_dataframe = get_frame_sequence_dataframe(train_dataframe, train_dir,
+                                                      include_disagreement=include_disagreement)
+        val_dataframe = get_frame_sequence_dataframe(val_dataframe, val_dir,
+                                                    include_disagreement=include_disagreement)
+        test_dataframe = get_frame_sequence_dataframe(test_dataframe, test_dir,
+                                                     include_disagreement=include_disagreement)
         return train_dataframe, val_dataframe, test_dataframe
 
     updated_train_dataframe = update_dataframe(train_dataframe, train_dir)
@@ -236,12 +253,18 @@ class EndoscapesSwinCVS_Dataset(Dataset):
 def get_dataframe(json_path, soft=False):
     """
     Get dataframes of the dataset splits in columns:
-    idx | vid | frame | C1 | C2 | C3
+    idx | vid | frame | C1 | C2 | C3 | D1 | D2 | D3
 
     soft: if False (default, baseline behaviour), C1/C2/C3 are MV-rounded
     integer labels in {0, 1}. If True (F1a intervention on the train split
     only), C1/C2/C3 are the raw mean annotator-agreement values in
     {0, 0.333, 0.667, 1.0}.
+
+    D1/D2/D3 are the F1b disagreement targets — 1 iff the criterion's three
+    annotators were NOT unanimous (2-1 split / contested), 0 if unanimous.
+    Derived from ds independently of `soft`; always stored. Whether the
+    dataset returns them is governed by `include_disagreement` in
+    get_class / get_frame_sequence_dataframe / update_dataframe.
     """
     with open(json_path, 'r') as file:
         data = json.load(file)
@@ -250,6 +273,9 @@ def get_dataframe(json_path, soft=False):
     C1 = []
     C2 = []
     C3 = []
+    D1 = []
+    D2 = []
+    D3 = []
 
     for i in data['images']:
         # Extract data
@@ -266,6 +292,11 @@ def get_dataframe(json_path, soft=False):
             C1_i = round(i['ds'][0])
             C2_i = round(i['ds'][1])
             C3_i = round(i['ds'][2])
+        # F1b disagreement: ds is the mean of three annotator binary votes,
+        # so a strict (0, 1) value means a 2-1 split / contested frame.
+        D1_i = int(0 < i['ds'][0] < 1)
+        D2_i = int(0 < i['ds'][1] < 1)
+        D3_i = int(0 < i['ds'][2] < 1)
 
         # Put in list
         vid.append(vid_i)
@@ -273,22 +304,29 @@ def get_dataframe(json_path, soft=False):
         C1.append(C1_i)
         C2.append(C2_i)
         C3.append(C3_i)
+        D1.append(D1_i)
+        D2.append(D2_i)
+        D3.append(D3_i)
 
     data_dict = {'vid': vid,
                 'frame': frame,
                 'C1': C1,
                 'C2': C2,
-                'C3': C3}
+                'C3': C3,
+                'D1': D1,
+                'D2': D2,
+                'D3': D3}
     data_dataframe = pd.DataFrame(data_dict)
     return data_dataframe
 
-def get_frame_sequence_dataframe(dataframe, image_folder):
+def get_frame_sequence_dataframe(dataframe, image_folder, include_disagreement=False):
     """
     For LSTM dataframe creator. Using dataframes updated with unlabelled images, get five frame sequences. The returned dataframe has columns:
     idx | f0 | f1 | f2 | f3 | f4 | classification
     idx - index of the sequence
     f0-4 - path to each image in the sequence
-    classification - list of ground truth values for C1-3 as, [C1, C2, C3] e.g. [0.0, 0.0, 1.0] 
+    classification - list of ground truth values. 3-vector [C1, C2, C3]
+        for baseline / F1a, 6-vector [C1, C2, C3, D1, D2, D3] for F1b.
     """
     new_dataframe_rows = []
     # Iterate over each video so as not to create intravid sequences
@@ -306,14 +344,15 @@ def get_frame_sequence_dataframe(dataframe, image_folder):
                 for datapoint in five_seq_dataframe.iterrows():
                     paths.append(generate_path(datapoint[1], image_folder)) # CHANGE VAL_DIR!!!!
                 # Get class of the last frame
-                classification = get_class(five_seq_dataframe.iloc[4])
+                classification = get_class(five_seq_dataframe.iloc[4],
+                                           include_disagreement=include_disagreement)
                 # Put it in a new row of the dataframe
                 new_row = { 'f0': paths[0], 'f1':  paths[1], 'f2': paths[2], 'f3': paths[3], 'f4': paths[4],
                             'classification': classification}
                 new_dataframe_rows.append(new_row)
 
     updated_dataframe = pd.DataFrame(new_dataframe_rows)
-    
+
     return updated_dataframe
 
 def update_dataframe(dataframe, image_folder):
@@ -332,26 +371,28 @@ def update_dataframe(dataframe, image_folder):
 
 def add_unlabelled_imgs(list_of_selected_images, selected_dataframe):
     """
-    Given existing splits dataframes, in correct otder, append images that are unlabelled. Output dataframe has columns:
-    idx | vid | frame | C1 | C2 | C3
-    where C1-3 is unlabelled it has a value '-1.0'
+    Given existing splits dataframes, in correct order, append images that are unlabelled. Output dataframe has columns:
+    idx | vid | frame | C1 | C2 | C3 | D1 | D2 | D3
+    where C1-3 / D1-3 are unlabelled they have value -1. The sequence builder
+    filters these out (it checks C1 != -1 on the last frame of the 5-frame
+    window), so the disagreement target is never read on unlabelled frames.
     """
     rows = []
     for image in list_of_selected_images:
         contents = image.split('.')[0].split('_')
         frame_info = (contents[0], contents[1])
-        rows.append({'vid': frame_info[0], 'frame': frame_info[1], 'C1': -1, 'C2': -1, 'C3': -1})
+        rows.append({'vid': frame_info[0], 'frame': frame_info[1],
+                     'C1': -1, 'C2': -1, 'C3': -1,
+                     'D1': -1, 'D2': -1, 'D3': -1})
 
     df = pd.DataFrame(rows)
 
     combined_df = pd.merge(df, selected_dataframe, on=['vid', 'frame'], how='left', suffixes=('_new', '_lbld'))
-    combined_df['C1'] = combined_df['C1_lbld'].combine_first(combined_df['C1_new'])
-    combined_df['C2'] = combined_df['C2_lbld'].combine_first(combined_df['C2_new'])
-    combined_df['C3'] = combined_df['C3_lbld'].combine_first(combined_df['C3_new'])
+    for col in ('C1', 'C2', 'C3', 'D1', 'D2', 'D3'):
+        combined_df[col] = combined_df[col + '_lbld'].combine_first(combined_df[col + '_new'])
 
     # Drop the redundant columns from df1
-    final_df = combined_df[['vid', 'frame', 'C1', 'C2', 'C3']]
-
+    final_df = combined_df[['vid', 'frame', 'C1', 'C2', 'C3', 'D1', 'D2', 'D3']]
 
     final_df = final_df.sort_values(by=['vid', 'frame'])
     final_df = final_df.reset_index(drop=True)
@@ -365,8 +406,18 @@ def generate_path(row, image_folder):
     path = os.path.join(image_folder, filename)
     return str(path)
 
-def get_class(row):
+def get_class(row, include_disagreement=False):
+    """
+    Return the per-frame label list.
+
+    Default (include_disagreement=False): 3-vector [C1, C2, C3] — baseline / F1a.
+    F1b (include_disagreement=True):     6-vector [C1, C2, C3, D1, D2, D3].
+    The training loop slices [:3] for the MV-head loss and [3:] for the
+    disagreement-head loss.
+    """
     classification = [float(row['C1']), float(row['C2']), float(row['C3'])]
+    if include_disagreement:
+        classification += [float(row['D1']), float(row['D2']), float(row['D3'])]
     return classification
 
 def get_endoscapes_mean_std(config):
