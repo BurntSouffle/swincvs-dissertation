@@ -98,9 +98,16 @@ def build_optimizer(config, model, **kwargs):
         parameters2= [  {'params': model.swinv2_model.parameters(), 'lr': config.TRAIN.OPTIMIZER.ENCODER_LR},
                         {'params': model.lstm.parameters(), 'lr': config.TRAIN.OPTIMIZER.CLASSIFIER_LR },
                         {'params': model.fc_lstm.parameters(), 'lr': config.TRAIN.OPTIMIZER.CLASSIFIER_LR}]
-    # Bare backbone - swinV2
+    # Bare backbone - swinV2 (Stage-1). DIFFERENTIAL LRs: the fresh 3-class head
+    # (model.head, random init) needs a high LR (CLASSIFIER_LR ~1e-3); the
+    # pretrained SwinV2 backbone needs a low LR (ENCODER_LR ~1e-5). A single
+    # shared LR cannot serve both (head learns too slow, OR backbone destabilises),
+    # which capped fixed-LR sweeps at ~0.30 val mAP. Split into two param groups.
     else:
-        parameters2= [  {'params': model.parameters(), 'lr': config.TRAIN.OPTIMIZER.ENCODER_LR}]
+        head_param_ids = {id(p) for p in model.head.parameters()}
+        backbone_params = [p for p in model.parameters() if id(p) not in head_param_ids]
+        parameters2= [  {'params': backbone_params,          'lr': config.TRAIN.OPTIMIZER.ENCODER_LR},
+                        {'params': model.head.parameters(),   'lr': config.TRAIN.OPTIMIZER.CLASSIFIER_LR}]
 
     # F1b auxiliary disagreement head shares the classifier LR group with
     # fc_lstm. Only added if the model has the head (config flag controls

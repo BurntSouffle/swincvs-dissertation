@@ -57,8 +57,14 @@ def main():
             break
         x, y = x.cuda(non_blocking=True), y.cuda(non_blocking=True)
         with torch.amp.autocast("cuda", enabled=True):
-            a, b = model(x)
-            loss = alpha * crit(a, y) + beta * crit(b, y)
+            out = model(x)
+            # Output arity depends on the variant (mirrors SwinCVS.py:152-159):
+            #   E2E+MULTICLASSIFIER -> (swin, lstm[, dis]);  frozen -> single lstm tensor.
+            outs = list(out) if isinstance(out, (tuple, list)) else [out]
+            if cfg.MODEL.MULTICLASSIFIER and len(outs) >= 2:
+                loss = alpha * crit(outs[0], y) + beta * crit(outs[1], y)
+            else:
+                loss = crit(outs[0], y)
         scaler(loss, optim, clip_grad=cfg.TRAIN.CLIP_GRAD,
                parameters=model.parameters(), create_graph=False,
                update_grad=True)

@@ -97,7 +97,10 @@ def main():
             else:
                 mv_probs = torch.sigmoid(model(samples)).squeeze(0).cpu().numpy()
             t = targets.squeeze(0).numpy()
-            stem = Path(df.iloc[idx]["f4"]).stem
+            # Full SwinCVS (5-frame) dataframes key the keyframe on "f4";
+            # the single-frame Stage-1 dataset (Endoscapes_Dataset) keys on "path".
+            path_col = "f4" if "f4" in df.columns else "path"
+            stem = Path(df.iloc[idx][path_col]).stem
             vid, frame = stem.split("_", 1)
             rows.append({
                 "video_id": int(vid), "frame": int(frame),
