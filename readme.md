@@ -1,81 +1,63 @@
-# SwinCVS: Automated Assessment of Critical View of Safety in Laparoscopic Cholecystectomy
+# Evaluation of Labels and Metrics in Automated Surgical Safety Assessment
 
-MSc dissertation project (UCL, AI & Medical Imaging, 2025–2026), extending the SwinCVS
-architecture to investigate whether the field's standard dataset and metric for CVS
-assessment actually measure what they're assumed to.
+**UCL MSc dissertation | Artificial Intelligence and Medical Imaging | 2025–2026**  
+**Author:** Abu Sufian Basith  
+**Supervisors:** Prof. Matt Clarkson and Franciszek Nowak
 
-**Supervisors:** Matthew Clarkson, Franciszek Nowak
+This repository contains research code extending the published SwinCVS implementation to study annotation reliability, probability calibration and the difference between frame-level classification scores and operation-level decisions for the Critical View of Safety (CVS) in laparoscopic cholecystectomy.
 
-## Overview
+**This is experimental research, not clinically validated or deployed surgical decision-support software.**
 
-The Critical View of Safety (CVS) is the standard safety checkpoint in laparoscopic
-cholecystectomy, requiring three criteria before the cystic duct and artery are divided:
-- **C1** — hepatocystic triangle cleared of fat and fibrous tissue
-- **C2** — cystic duct and artery clearly identified
-- **C3** — lower third of the gallbladder separated from the liver bed
+## Research question
 
-This repository reproduces [SwinCVS](https://doi.org/10.1007/s11548-025-03354-9)
-(Nowak et al., 2025) on the Endoscapes-CVS201 dataset, then uses it as a testbed to
-interrogate the dataset/metric pairing the field has standardised on, rather than take
-per-frame mAP at face value as a proxy for surgical safety assessment.
+The Endoscapes-CVS201 benchmark evaluates whether three surgical criteria are visible in individual frames:
 
-## Key findings
+- **C1:** Two and only two structures (cystic duct and cystic artery) enter the gallbladder.
+- **C2:** The hepatocystic triangle is cleared of fatty and fibrous tissue.
+- **C3:** The lower third of the gallbladder is separated from the liver bed, exposing the cystic plate.
 
-- Reproduced SwinCVS and **exceeded the published baseline**
-- **Curation beats scale for C2** — a smaller, carefully curated label set outperformed
-  simply adding more (noisier) labels, challenging the assumption that more data
-  straightforwardly helps
-- **Optimal annotator-disagreement handling is architecture-dependent** — the best
-  strategy for resolving inter-annotator disagreement reverses between ViT and SwinCVS
-  backbones; there's no single "correct" way to resolve label noise
-- **The per-frame metric may be measuring the wrong thing** — 43.5% of frames labelled
-  C1-negative in the standard dataset have both hepatocystic-triangle structures visible
-  on inspection, suggesting frame-level ground truth doesn't cleanly capture the
-  criterion it's meant to represent
+Per-frame mean average precision (mAP) measures ranking quality, but does not directly assess whether a model would correctly declare that an entire operation had achieved CVS. My submitted thesis investigates both the labels and this evaluation gap.
 
-## Repository structure
+## Findings from the submitted dissertation
 
-config/ # model & experiment configs
-experiments/
-frozen_backbone_mask_ablation/ # backbone-frozen ablation experiments
-scoring/ # evaluation / metric scoring
-scripts/ # training & data prep
-SwinCVS.py # main training/inference entrypoint
-consolidate.py # results consolidation
-create_optimal_labels.py # label-strategy experiments (curation vs. scale)
+Submitted 31 July 2026: *Evaluation of Labels and Metrics in the Automated Assessment of the Critical View of Safety in Laparoscopic Cholecystectomy.*
 
+| Study | Result | Interpretation |
+|---|---|---|
+| SwinCVS reproduction | **65.81% test mAP across five seeds**, compared with the published **67.45%** two-stage configuration | Reproduction within 1.64 percentage points; **not** an improvement over the published result. |
+| Operation-level analysis | **14/40** test operations achieved full CVS under aggregated annotated-frame labels. With validation-tuned thresholds and two consecutive annotated keyframes, the model declared full CVS in **29–33/40**, including **16–19/26** non-achieving operations. | Frame-level ranking performance does not establish reliable operation-level declarations. |
+| Matched null experiments | Preserving the prediction firing pattern while mismatching it with operations reproduced the *count* of operations declared; under the two-frame rule, discrimination from the matched null improved (permutation **p = 0.023**). | Declaration counts alone are uninformative without correct operation matching. |
+| Annotator audit | On C1, two annotators agreed more closely with one another than with a third annotator applying a different criterion relationship. | Majority vote hides a systematic difference in interpretation; it does not decide which annotator is clinically correct. |
+| **Separate** soft-label experiment | Expert-vote-fraction targets changed test mAP from **62.19% to 64.48%** and expected calibration error from **16.10% to 8.93%** (three seeds). | Separate end-to-end experiment, **not** the five-seed two-stage SwinCVS reproduction above. |
 
-## Setup
+The dissertation's main contribution is scrutiny of labels, metrics and decision rules, rather than a claim of a new state-of-the-art architecture.
+
+## Repository contents
+
+- `SwinCVS.py`: training/inference entry point derived from the upstream implementation.
+- `config/`: experiment configurations.
+- `scripts/` and `scoring/`: data, analysis and evaluation utilities.
+- `experiments/`: historical ablation experiments.
+- `create_optimal_labels.py`: exploratory label-strategy work; **not** a synonym for the thesis's soft vote-fraction target experiment.
+
+Historical exploratory findings in this repository should not be conflated with the submitted dissertation results.
+
+## Historical setup
+
+Requires the separately obtained Endoscapes data, relevant pretrained weights, and a compatible CUDA/PyTorch environment. A historical setup recipe is:
 
 ```bash
-conda create --name swincvs python=3.9.19
+conda create -n swincvs python=3.9.19
 conda activate swincvs
 conda install pytorch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 pytorch-cuda=12.1 -c pytorch -c nvidia
 pip install -r requirements.txt
-```
-Requires CUDA 12.1. The dataset (Endoscapes-CVS201) downloads automatically, or point
-the script at an existing local copy.
-
-## Usage
-
-```bash
-python3 SwinCVS.py --config_path config/SwinCVS_config.yaml
+python SwinCVS.py --config_path config/SwinCVS_config.yaml
 ```
 
-| Config flag | Purpose |
-|---|---|
-| `MODEL.LSTM` | `False` = SwinV2 backbone only · `True` = SwinCVS (SwinV2 + LSTM) |
-| `MODEL.E2E` | `False` = frozen backbone · `True` = end-to-end training |
-| `MODEL.MULTICLASSIFIER` | adds a classifier head before the LSTM |
-| `MODEL.INFERENCE` | `True` skips training, test-only on provided weights |
-| `BACKBONE.PRETRAINED` | `imagenet` or `endoscapes` |
+The command is a **historical research entry point**, not a newly verified one-command reproduction of all thesis analyses. Dataset paths, pretrained weights and checkpoints need configuring; restricted data is not included here.
 
-## Acknowledgements
+## Limits and attribution
 
-Built on the original SwinCVS architecture and codebase:
-> Nowak, F., Mazomenos, E., Davidson, B., Clarkson, M. *SwinCVS: A Unified Approach to
-> Classifying Critical View of Safety Structures in Laparoscopic Cholecystectomy.*
-> Int J CARS (2025). https://doi.org/10.1007/s11548-025-03354-9
+This is a single-dataset research evaluation with a limited operation-level test set and without independent clinical validation of these model declarations. Ranking, calibration and operation-level discrimination are distinct properties. The thesis documents limitations including annotation uncertainty and some affected training/validation temporal-window ordering (test windows unaffected).
 
----
-Abu Sufian Basith · MSc AI & Medical Imaging, UCL
+Adapted from the published SwinCVS architecture and code by F. Nowak, E. B. Mazomenos, B. Davidson and M. J. Clarkson: [SwinCVS (2025)](https://doi.org/10.1007/s11548-025-03354-9). Original contributions remain credited to their authors; this repository documents Abu Sufian Basith's experiments and analysis. See [License.txt](License.txt) (CC BY-NC-SA 4.0), as well as the separate [Endoscapes](https://github.com/CAMMA-public/Endoscapes) data terms.
